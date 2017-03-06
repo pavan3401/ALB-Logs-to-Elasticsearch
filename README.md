@@ -1,6 +1,6 @@
 # ALB-Logs-to-Elasticsearch
 #Send ALB logs from S3 bucket to ElasticSearch using AWS Lambda.
-This project based on [awslabs/amazon-elasticsearch-lambda-samples](https://github.com/awslabs/amazon-elasticsearch-lambda-samples,https://github.com/blmr/aws-elb-logs-to-elasticsearch.git)
+This project based on [awslabs/amazon-elasticsearch-lambda-samples,blmr/aws-elb-logs-to-elasticsearch](https://github.com/awslabs/amazon-elasticsearch-lambda-samples,https://github.com/blmr/aws-elb-logs-to-elasticsearch.git)
 Sample code for AWS Lambda to get AWS ELB log files from S3, parse
 and add them to an Amazon Elasticsearch Service domain.
 
