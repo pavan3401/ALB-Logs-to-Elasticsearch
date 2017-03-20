@@ -25,7 +25,7 @@ var zlib     = require('zlib');
 var esDomain = {
     endpoint: 'Elasticsearch Endpoint',
     region: 'us-east-1',
-    index: 'alblogs-' + indexTimestamp, // adds a timestamp to index. Example: elblogs-2016.03.31
+    index: 'alblogs-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
     doctype: 'alb-access-logs'
 };
 var endpoint =  new AWS.Endpoint(esDomain.endpoint);

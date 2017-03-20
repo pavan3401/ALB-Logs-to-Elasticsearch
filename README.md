@@ -62,7 +62,7 @@ For (5)
 
 ```
 var esDomain = {
-    endpoint: 'elastic-search-domain-fs12fdwrdq2ahilw4zbrcocmmy.us-east-1.es.amazonaws.com',
+    endpoint: 'elastic-search-domain-123456.us-east-1.es.amazonaws.com',
     region: 'us-east-1',
     index: 'alb-access-logs-' + indexTimestamp,
     doctype: 'alb-access-logs'
