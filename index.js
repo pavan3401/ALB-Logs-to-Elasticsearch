@@ -127,102 +127,120 @@ exports.handler = function(event, context) {
         s3LogsToES(bucket, objKey, context, lineStream, recordStream);
     });
 }
+
 function parse(line) {
-    var parsed = {};
+
     var url = require('url');
-    var request_labels =
-        [
-            'request_method',
-            'request_uri',
-            'request_http_version',
-            'request_uri_scheme',
-            'request_uri_host',
-            'request_uri_port',
-            'request_uri_path',
-            'request_uri_query'
-        ];
-    //
-    // Trailing newline? NOTHX
-    //
+    
+    var field_names = [
+        'type',
+        'timestamp',
+        'elb',
+        'client', 
+        'target',
+        'request_processing_time',
+        'target_processing_time',
+        'response_processing_time',
+        'elb_status_code',
+        'target_status_code',
+        'received_bytes',
+        'sent_bytes',
+        'request',
+        'user_agent',
+        'ssl_cipher',
+        'ssl_protocol',
+        'target_group_arn',
+        'trace_id',   
+        'domain_name',
+        'chosen_cert_arn'          
+    ];
+
+
+    // First phase, separate out the fields
+    within_quotes = false;
+    current_field = 0;
+    current_value = '';
+
+    var parsed = {};
+
+    // Remove trailing newline
     if (line.match(/\n$/)) {
         line = line.slice(0, line.length - 1);
     }
-    [
-        { 'type'                        : ' '   },
-        { 'timestamp'                   : ' '   },
-        { 'elb'                         : ' '   },
-        { 'client'                      : ':'   },
-        { 'client_port'                 : ' '   },
-        { 'target'                      : ':'   },
-        { 'target_port'                 : ' '   },
-        { 'request_processing_time'     : ' '   },
-        { 'target_processing_time'      : ' '   },
-        { 'response_processing_time'    : ' '   },
-        { 'elb_status_code'             : ' '   },
-        { 'target_status_code'          : ' '   },
-        { 'received_bytes'              : ' '   },
-        { 'sent_bytes'                  : ' "'  },
-        { 'request'                     : '" "' },
-        { 'user_agent'                  : '" '  },
-        { 'ssl_cipher'                  : ' '   },
-        { 'ssl_protocol'                : ' '   },
-        { 'target_group_arn'            : ' "'  },
-        { 'trace_id'                    : '" '  }
-    ].some(function (t) {
-        var label = Object.keys(t)[0];
-        delimiter = t[label]
-        var m = line.match(delimiter);
-        if (m === null) {
-            //
-            // No match. Try to pick off the last element.
-            //
-            m = line.match(delimiter.slice(0, 1));
-            if (m === null) {
-                field = line;
+
+    // Character by character
+    for (var i in line) {
+
+        c = line[i];
+
+        if (!within_quotes) {
+            if (c == '"') {
+                // Beginning a quoted segment.
+                within_quotes = true;
+            }
+            else if (c == " ") {
+                // Moving on to the next field. Save current and reset.
+                parsed[field_names[current_field]] = current_value;
+                current_field++;
+                current_value = '';
             }
             else {
-                field = line.substr(0, m.index);
+                // Part of this field.
+                current_value += c;
             }
-            parsed[label] = field;
-            return true;
         }
-        field = line.substr(0, m.index);
-        line = line.substr(m.index + delimiter.length);
-        parsed[label] = field;
-    });
-    // target
-    if(parsed.target != -1) {
-        parsed['target_port'] = parsed.target.split(":")[1];
-        parsed['target'] = parsed.target.split(":")[0];
-    } else {
-        parsed['target_port'] = '-1';
+        else {
+            if (c == '"') {
+                // Ending a quoted segment.
+                within_quotes = false;
+            }
+            
+            else {
+                // Part of this quoted field.
+                current_value += c;
+            }
+        }
     }
-    // console.log('request: [' + JSON.stringify(parsed) + ']');
-    // request
-    if(parsed.request != '- - - ') {
-        var i = 0;
-        var method = parsed.request.split(" ")[0];
-        var url = url.parse(parsed.request.split(" ")[1]);
-        var http_version = parsed.request.split(" ")[2];
-        parsed[request_labels[i]] = method;
-        i++;
-        parsed[request_labels[i]] = url.href;
-        i++;
-        parsed[request_labels[i]] = http_version;
-        i++;
-        parsed[request_labels[i]] = url.protocol;
-        i++;
-        parsed[request_labels[i]] = url.hostname;
-        i++;
-        parsed[request_labels[i]] = url.port;
-        i++;
-        parsed[request_labels[i]] = url.pathname;
-        i++;
-        parsed[request_labels[i]] = url.query;
-    } else {
-        request_labels.forEach(function(label) {
-            parsed[label] = '-';
-        });
+
+    // Second phase, breaking out the port for the client and target, if there's a colon present
+    colon_sep = ['client', 'target']
+    for (var i in colon_sep) {
+        var orig = parsed[colon_sep[i]];
+
+        if (orig.indexOf(":") > 0) {
+            splat = orig.split(":");
+            parsed[colon_sep[i]] = splat[0]
+            parsed[colon_sep[i] + "_port"] = splat[1]
+        }
     }
+
+    // Third phase, parsing out the request into more fields
+    // Only do this if there's actually data in that field
+    if (parsed['request'].trim() != '- - -') {
+
+        splat = parsed['request'].split(" ");
+
+        // Basic values
+        parsed['request_method'] = splat[0]
+        parsed['request_uri'] = splat[1]
+        parsed['request_http_version'] = splat[2]
+
+        // If we can parse the URL, we can populate other fields properly
+        try {
+            uri = url.parse(splat[1]);
+
+            parsed['request_uri_scheme'] = uri.protocol;
+            parsed['request_uri_host']   = uri.hostname;
+            parsed['request_uri_port']   = uri.port;
+            parsed['request_uri_path']   = uri.pathname;
+            parsed['request_uri_query']  = uri.query;
+        } 
+
+        // Otherwise, we just leave them out.
+        catch (e) {}
+    } 
+    
+
+    // All done.
     return parsed;
-};
+}

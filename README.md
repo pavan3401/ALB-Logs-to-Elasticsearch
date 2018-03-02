@@ -31,6 +31,14 @@ Please keep in mind the following notes and configuration overrides:
 * When registering the S3 bucket as the data-source in Lambda, add a filter
   for files having `.log.gz` suffix, so that Lambda picks up only apache log files.
 
+* You need to set Lambda environment variables for the following:
+```
+ ES_DOCTYPE: for the `type` field in Elasticsearch
+ ES_ENDPOINT: the FQDN of your AWS Elasticsearch Service
+ ES_INDEX_PREFIX: the prefix for your indices, which will be suffixed with the date
+ ES_REGION: The AWS region, e.g. us-west-1, of your Elasticsearch instance
+ ```
+
 * The following authorizations are required:
 
   1. Lambda permits S3 to push event notification to it
