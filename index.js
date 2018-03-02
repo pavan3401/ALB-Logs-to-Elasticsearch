@@ -23,10 +23,10 @@ var indexTimestamp = new Date().toISOString().replace(/\-/g, '.').replace(/T.+/,
 var zlib     = require('zlib');
 /* Globals */
 var esDomain = {
-    endpoint: 'Elasticsearch Endpoint',
-    region: 'us-east-1',
-    index: 'alblogs-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
-    doctype: 'alb-access-logs'
+    endpoint: process.env.ES_ENDPOINT,
+    region: process.env.ES_REGION,
+    index: process.env.ES_INDEX_PREFIX + '-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
+    doctype: process.env.ES_DOCTYPE
 };
 var endpoint =  new AWS.Endpoint(esDomain.endpoint);
 var s3 = new AWS.S3();
