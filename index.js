@@ -132,6 +132,8 @@ function parse(line) {
 
     var url = require('url');
     
+    // Fields in log lines are essentially space separated,
+    // but are also quote-enclosed for strings containing spaces.
     var field_names = [
         'type',
         'timestamp',
@@ -155,11 +157,11 @@ function parse(line) {
         'chosen_cert_arn'          
     ];
 
-
     // First phase, separate out the fields
     within_quotes = false;
     current_field = 0;
     current_value = '';
+    current_numeric = NaN;
 
     var parsed = {};
 
@@ -175,11 +177,21 @@ function parse(line) {
 
         if (!within_quotes) {
             if (c == '"') {
-                // Beginning a quoted segment.
+                // Beginning a quoted field.
                 within_quotes = true;
             }
             else if (c == " ") {
-                // Moving on to the next field. Save current and reset.
+                // Separator. Moving on to the next field. 
+
+                // Convert to numeric type if appropriate.
+                // This is needed to make sure Elasticsearch gets the
+                // dynamic mapping correct.
+                current_numeric = Number(current_value)
+                if (!isNaN(current_numeric)) {
+                    current_value = current_numeric;
+                }
+
+                // Save current and reset.
                 parsed[field_names[current_field]] = current_value;
                 current_field++;
                 current_value = '';
@@ -191,7 +203,7 @@ function parse(line) {
         }
         else {
             if (c == '"') {
-                // Ending a quoted segment.
+                // Ending a quoted field.
                 within_quotes = false;
             }
             
@@ -210,7 +222,7 @@ function parse(line) {
         if (orig.indexOf(":") > 0) {
             splat = orig.split(":");
             parsed[colon_sep[i]] = splat[0]
-            parsed[colon_sep[i] + "_port"] = splat[1]
+            parsed[colon_sep[i] + "_port"] = Number(splat[1])
         }
     }
 
@@ -239,7 +251,6 @@ function parse(line) {
         // Otherwise, we just leave them out.
         catch (e) {}
     } 
-    
 
     // All done.
     return parsed;
