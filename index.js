@@ -154,7 +154,10 @@ function parse(line) {
         'target_group_arn',
         'trace_id',   
         'domain_name',
-        'chosen_cert_arn'          
+        'chosen_cert_arn',
+        'waf_number',
+        'waf_time',
+        'waf_message'
     ];
 
     // First phase, separate out the fields
@@ -195,6 +198,7 @@ function parse(line) {
                 parsed[field_names[current_field]] = current_value;
                 current_field++;
                 current_value = '';
+
             }
             else {
                 // Part of this field.
@@ -214,7 +218,12 @@ function parse(line) {
         }
     }
 
-    // Second phase, breaking out the port for the client and target, if there's a colon present
+    // Save off the last one
+    parsed[field_names[current_field]] = current_value;
+
+    // Second phase, cleanups.
+
+    // Breaking out the port for the client and target, if there's a colon present
     colon_sep = ['client', 'target']
     for (var i in colon_sep) {
         var orig = parsed[colon_sep[i]];
@@ -224,6 +233,11 @@ function parse(line) {
             parsed[colon_sep[i]] = splat[0]
             parsed[colon_sep[i] + "_port"] = Number(splat[1])
         }
+    }
+
+    // Dropping the target status code if there isn't one
+    if (parsed['target_status_code'] == '-') {
+        delete parsed['target_status_code']
     }
 
     // Third phase, parsing out the request into more fields
@@ -241,11 +255,11 @@ function parse(line) {
         try {
             uri = url.parse(splat[1]);
 
-            parsed['request_uri_scheme'] = uri.protocol;
-            parsed['request_uri_host']   = uri.hostname;
-            parsed['request_uri_port']   = uri.port;
-            parsed['request_uri_path']   = uri.pathname;
-            parsed['request_uri_query']  = uri.query;
+            parsed['request_uri_scheme'] = uri.protocol ? uri.protocol : '';
+            parsed['request_uri_host']   = uri.hostname ? uri.hostname : '';
+            parsed['request_uri_port']   = uri.port     ? uri.port     : '';
+            parsed['request_uri_path']   = uri.pathname ? uri.pathname : '';
+            parsed['request_uri_query']  = uri.query    ? uri.query    : '';
         } 
 
         // Otherwise, we just leave them out.
