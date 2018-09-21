@@ -71,13 +71,20 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
  * (using the "context" parameter).
  */
 function postDocumentToES(doc, context) {
+
+    // Create request object
     var req = new AWS.HttpRequest(endpoint);
+
     req.method = 'POST';
     req.path = path.join('/', esDomain.index, esDomain.doctype);
     req.region = esDomain.region;
     req.body = doc;
+
+    // Set up headers
     req.headers['presigned-expires'] = false;
     req.headers['Host'] = endpoint.host;
+    req.headers['Content-Type'] = 'application/json';
+
     // Sign the request (Sigv4)
     var signer = new AWS.Signers.V4(req, 'es');
     signer.addAuthorization(creds, new Date());
