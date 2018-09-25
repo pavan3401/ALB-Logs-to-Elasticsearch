@@ -19,16 +19,14 @@ var AWS = require('aws-sdk');
 var LineStream = require('byline').LineStream;
 var path = require('path');
 var stream = require('stream');
-var indexTimestamp = new Date().toISOString().replace(/\-/g, '.').replace(/T.+/, '');
 var zlib     = require('zlib');
+
+
 /* Globals */
-var esDomain = {
-    endpoint: process.env.ES_ENDPOINT,
-    region: process.env.ES_REGION,
-    index: process.env.ES_INDEX_PREFIX + '-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
-    doctype: process.env.ES_DOCTYPE
-};
-var endpoint =  new AWS.Endpoint(esDomain.endpoint);
+var indexTimestamp;
+var esDomain;
+var endpoint; 
+
 var s3 = new AWS.S3();
 var totLogLines = 0;    // Total number of log lines in the file
 var numDocsAdded = 0;   // Number of log lines added to ES so far
@@ -71,23 +69,23 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
  * (using the "context" parameter).
  */
 function postDocumentToES(doc, context) {
-
-    // Create request object
     var req = new AWS.HttpRequest(endpoint);
-
     req.method = 'POST';
     req.path = path.join('/', esDomain.index, esDomain.doctype);
     req.region = esDomain.region;
     req.body = doc;
-
-    // Set up headers
+    
     req.headers['presigned-expires'] = false;
     req.headers['Host'] = endpoint.host;
     req.headers['Content-Type'] = 'application/json';
-
+    
+    //console.log(req.headers);
+    //console.log(req.path);
+    
     // Sign the request (Sigv4)
     var signer = new AWS.Signers.V4(req, 'es');
     signer.addAuthorization(creds, new Date());
+    
     // Post document to ES
     var send = new AWS.NodeHttpClient();
     send.handleRequest(req, null, function(httpResp) {
@@ -111,7 +109,22 @@ function postDocumentToES(doc, context) {
 }
 /* Lambda "main": Execution starts here */
 exports.handler = function(event, context) {
+
+    // Set indexTimestamp and esDomain index fresh on each run
+    indexTimestamp = new Date().toISOString().replace(/\-/g, '.').replace(/T.+/, '');
+
+    esDomain = {
+        endpoint: process.env.ES_ENDPOINT,
+        region: process.env.ES_REGION,
+        index: process.env.ES_INDEX_PREFIX + '-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
+        doctype: process.env.ES_DOCTYPE
+    };
+
+    endpoint = new AWS.Endpoint(esDomain.endpoint);
+
     console.log('Received event: ', JSON.stringify(event, null, 2));
+    console.log("Writing out to index " + esDomain['index']);
+    
     /* == Streams ==
      * To avoid loading an entire (typically large) log file into memory,
      * this is implemented as a pipeline of filters, streaming log data
@@ -246,6 +259,7 @@ function parse(line) {
     if (parsed['target_status_code'] == '-') {
         delete parsed['target_status_code']
     }
+    if (parsed['undefined']) delete parsed['undefined']
 
     // Third phase, parsing out the request into more fields
     // Only do this if there's actually data in that field
