@@ -1,6 +1,6 @@
 /*
  * This project based on https://github.com/awslabs/amazon-elasticsearch-lambda-samples,https://github.com/blmr/aws-elb-logs-to-elasticsearch.git
- * Sample code for AWS Lambda to get AWS ELB log files from S3, parse
+ * Function for AWS Lambda to get AWS ELB log files from S3, parse
  * and add them to an Amazon Elasticsearch Service domain.
  *
  *
@@ -14,131 +14,84 @@
  * express or implied.  See the License for the specific language governing
  * permissions and limitations under the License.
  */
+
 /* Imports */
 var AWS = require('aws-sdk');
 var LineStream = require('byline').LineStream;
 var path = require('path');
 var stream = require('stream');
-var zlib     = require('zlib');
+var zlib = require('zlib');
+var ES = require('elasticsearch');
 
 
 /* Globals */
 var indexTimestamp;
 var esDomain;
-var endpoint; 
-
+var elasticsearch;
 var s3 = new AWS.S3();
-var totLogLines = 0;    // Total number of log lines in the file
-var numDocsAdded = 0;   // Number of log lines added to ES so far
-/*
- * The AWS credentials are picked up from the environment.
- * They belong to the IAM role assigned to the Lambda function.
- * Since the ES requests are signed using these credentials,
- * make sure to apply a policy that permits ES domain operations
- * to the role.
- */
-var creds = new AWS.EnvironmentCredentials('AWS');
-/*
- * Get the log file from the given S3 bucket and key.  Parse it and add
- * each log record to the ES domain.
- */
-function s3LogsToES(bucket, key, context, lineStream, recordStream) {
-    // Note: The Lambda function should be configured to filter for .log.gz files
-    // (as part of the Event Source "suffix" setting).
-   
-    var s3Stream = s3.getObject({Bucket: bucket, Key: key}).createReadStream();
-    var gunzipStream = zlib.createGunzip();
-    // Flow: S3 file stream -> Log Line stream -> Log Record stream -> ES
-    s3Stream
-        .pipe(gunzipStream)
-        .pipe(lineStream)
-        .pipe(recordStream)
-        .on('data', function(parsedEntry) {
-            postDocumentToES(parsedEntry, context);
-        });
-    s3Stream.on('error', function() {
-        console.log(
-            'Error getting object "' + key + '" from bucket "' + bucket + '".  ' +
-            'Make sure they exist and your bucket is in the same region as this function.');
-        context.fail();
-    });
-}
-/*
- * Add the given document to the ES domain.
- * If all records are successfully added, indicate success to lambda
- * (using the "context" parameter).
- */
-function postDocumentToES(doc, context) {
-    var req = new AWS.HttpRequest(endpoint);
-    req.method = 'POST';
-    req.path = path.join('/', esDomain.index, esDomain.doctype);
-    req.region = esDomain.region;
-    req.body = doc;
-    
-    req.headers['presigned-expires'] = false;
-    req.headers['Host'] = endpoint.host;
-    req.headers['Content-Type'] = 'application/json';
-    
-    //console.log(req.headers);
-    //console.log(req.path);
-    
-    // Sign the request (Sigv4)
-    var signer = new AWS.Signers.V4(req, 'es');
-    signer.addAuthorization(creds, new Date());
-    
-    // Post document to ES
-    var send = new AWS.NodeHttpClient();
-    send.handleRequest(req, null, function(httpResp) {
-        var body = '';
-        httpResp.on('data', function (chunk) {
-            body += chunk;
-        });
-        httpResp.on('end', function (chunk) {
-            numDocsAdded ++;
-            if (numDocsAdded === totLogLines) {
-                // Mark lambda success.  If not done so, it will be retried.
-                console.log('All ' + numDocsAdded + ' log records added to ES.');
-                context.succeed();
-            }
-        });
-    }, function(err) {
-        console.log('Error: ' + err);
-        console.log(numDocsAdded + 'of ' + totLogLines + ' log records added to ES.');
-        context.fail();
-    });
-}
+
+// Bulk indexing
+var maxBulkIndexLines = 100; // Max Number of log lines to send per bulk interaction with ES
+var totalLines;
+var bulkBuffer;
+
 /* Lambda "main": Execution starts here */
 exports.handler = function(event, context) {
+
+    // Number of log lines written
+    totalLines = 0;
 
     // Set indexTimestamp and esDomain index fresh on each run
     indexTimestamp = new Date().toISOString().replace(/\-/g, '.').replace(/T.+/, '');
 
     esDomain = {
         endpoint: process.env.ES_ENDPOINT,
-        region: process.env.ES_REGION,
         index: process.env.ES_INDEX_PREFIX + '-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
-        doctype: process.env.ES_DOCTYPE
+        doctype: process.env.ES_DOCTYPE,
+        environment: process.env.ES_ENVIRONMENT,
+        deployment: process.env.ES_DEPLOYMENT
     };
 
-    endpoint = new AWS.Endpoint(esDomain.endpoint);
+    /**
+     * Get connected to Elasticsearch using the official elasticsearch.js client
+     * and the http-aws-es Connection Class for signing requests using IAM creds.
+     *
+     * The AWS credentials are picked up from the environment.
+     * They belong to the IAM role assigned to the Lambda function.
+     * Since the ES requests are signed using these credentials,
+     * make sure to apply a policy that permits ES domain operations
+     * to the role.
+     */
+    elasticsearch = new ES.Client({
+        host: esDomain.endpoint,
+        connectionClass: require('http-aws-es'),
+        log: 'error'
+    })
 
-    console.log('Received event: ', JSON.stringify(event, null, 2));
-    console.log("Writing out to index " + esDomain['index']);
-    
+    // Prepare bulk buffer
+    initBulkBuffer();
+
     /* == Streams ==
      * To avoid loading an entire (typically large) log file into memory,
      * this is implemented as a pipeline of filters, streaming log data
      * from S3 to ES.
-     * Flow: S3 file stream -> Log Line stream -> Log Record stream -> ES
+     * Flow: S3 file stream -> Log Line stream -> Log Record stream -> Lambda buffer -> ES Bulk API
      */
     var lineStream = new LineStream();
+
     // A stream of log records, from parsing each log line
-    var recordStream = new stream.Transform({objectMode: true})
+    var recordStream = new stream.Transform({
+        objectMode: true
+    })
     recordStream._transform = function(line, encoding, done) {
         var logRecord = parse(line.toString());
+
+        // Add standard fields to help with searching
+        logRecord['environment'] = esDomain.environment;
+        logRecord['deployment'] = esDomain.deployment;
+
         var serializedRecord = JSON.stringify(logRecord);
         this.push(serializedRecord);
-        totLogLines ++;
         done();
     }
     event.Records.forEach(function(record) {
@@ -148,17 +101,104 @@ exports.handler = function(event, context) {
     });
 }
 
+/*
+ * Get the log file from the given S3 bucket and key.  Parse it and add
+ * each log record to the ES domain.
+ */
+function s3LogsToES(bucket, key, context, lineStream, recordStream) {
+    // Note: The Lambda function should be configured to filter for .log.gz files
+    // (as part of the Event Source "suffix" setting).
+
+    var s3Stream = s3.getObject({
+        Bucket: bucket,
+        Key: key
+    }).createReadStream();
+    var gunzipStream = zlib.createGunzip();
+
+    s3Stream
+        .pipe(gunzipStream)
+        .pipe(lineStream)
+        .pipe(recordStream)
+        .on('data', function(parsedEntry) {
+
+            // Add this log entry to the buffer
+            addToBulkBuffer(parsedEntry);
+
+            // See if it's time to flush and proceed
+            checkFlushBuffer();
+        })
+        .on('error', function() {
+            console.log(
+                'Error getting object "' + key + '" from bucket "' + bucket + '".  ' +
+                'Make sure they exist and your bucket is in the same region as this function.');
+            context.fail();
+        })
+        .on('finish', function() {
+            console.log("S3 Stream finished, calling for final buffer flush now.")
+            flushBuffer();
+            context.succeed();
+        })
+}
+
+
+/*
+ * Bulk Buffering Functions
+ */
+
+function initBulkBuffer() {
+    bulkBuffer = [];
+    console.log("Bulk buffer initialized.")
+}
+
+function addToBulkBuffer(doc) {
+    bulkBuffer.push(doc);
+}
+
+function checkFlushBuffer() {
+    if (bulkBuffer.length >= maxBulkIndexLines) {
+        console.log("Bulk buffer full, calling for buffer flush now.")
+        flushBuffer();
+    }
+}
+
+function flushBuffer() {
+    bulkBody = convertBufferToBulkBody(bulkBuffer);
+    postBulkDocumentsToES(bulkBody);
+    numLines = bulkBody.length;
+    totalLines += numLines;
+    console.log("Bulk buffer flushed, "+numLines+" lines added, "+totalLines+" added total. Now clearing buffer.")
+    bulkBuffer = [];
+}
+
+function convertBufferToBulkBody(buffer) {
+
+    bulkBody = [];
+
+    for (var i in buffer) {
+        logEntry = buffer[i];
+
+        bulkBody.push({ index: { _index: esDomain.index, _type: esDomain.doctype } });
+        bulkBody.push(logEntry);
+    }
+
+    return bulkBody;
+}
+
+function postBulkDocumentsToES(bulkBody) {
+    elasticsearch.bulk({ body: bulkBody })
+}
+
 function parse(line) {
 
     var url = require('url');
-    
+
     // Fields in log lines are essentially space separated,
     // but are also quote-enclosed for strings containing spaces.
     var field_names = [
         'type',
         'timestamp',
         'elb',
-        'client', 
+        'client',
         'target',
         'request_processing_time',
         'target_processing_time',
@@ -172,7 +212,7 @@ function parse(line) {
         'ssl_cipher',
         'ssl_protocol',
         'target_group_arn',
-        'trace_id',   
+        'trace_id',
         'domain_name',
         'chosen_cert_arn',
         'waf_number',
@@ -202,8 +242,7 @@ function parse(line) {
             if (c == '"') {
                 // Beginning a quoted field.
                 within_quotes = true;
-            }
-            else if (c == " ") {
+            } else if (c == " ") {
                 // Separator. Moving on to the next field. 
 
                 // Convert to numeric type if appropriate.
@@ -219,19 +258,15 @@ function parse(line) {
                 current_field++;
                 current_value = '';
 
-            }
-            else {
+            } else {
                 // Part of this field.
                 current_value += c;
             }
-        }
-        else {
+        } else {
             if (c == '"') {
                 // Ending a quoted field.
                 within_quotes = false;
-            }
-            
-            else {
+            } else {
                 // Part of this quoted field.
                 current_value += c;
             }
@@ -277,15 +312,15 @@ function parse(line) {
             uri = url.parse(splat[1]);
 
             parsed['request_uri_scheme'] = uri.protocol ? uri.protocol : '';
-            parsed['request_uri_host']   = uri.hostname ? uri.hostname : '';
-            parsed['request_uri_port']   = uri.port     ? uri.port     : '';
-            parsed['request_uri_path']   = uri.pathname ? uri.pathname : '';
-            parsed['request_uri_query']  = uri.query    ? uri.query    : '';
-        } 
+            parsed['request_uri_host'] = uri.hostname ? uri.hostname : '';
+            parsed['request_uri_port'] = uri.port ? uri.port : '';
+            parsed['request_uri_path'] = uri.pathname ? uri.pathname : '';
+            parsed['request_uri_query'] = uri.query ? uri.query : '';
+        }
 
         // Otherwise, we just leave them out.
         catch (e) {}
-    } 
+    }
 
     // All done.
     return parsed;

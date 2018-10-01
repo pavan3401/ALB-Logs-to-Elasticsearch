@@ -1,18 +1,20 @@
 {
-  "name": "s3_lambda_es",
-  "description": "AWS Lambda to get ALB log files from S3 and parse them to ES",
-  "version": "1.0.0",
+  "name": "s3_lambda_es_bulk",
+  "description": "AWS Lambda to get ALB log files from S3 and parse them to ES with bulk indexing",
+  "version": "2.0.0",
   "maintainers": [
     {
-      "name": "pavan kumar koneru"
+      "name": "Mike Sollanych"
     }
   ],
   "dependencies": {
-    "aws-sdk": "2.2.48",
+    "aws-sdk": ">=2.138.0",
     "path": "0.12.7",
     "stream": "0.0.2",
-    "byline": "4.2.1"
+    "byline": "4.2.1",
+    "elasticsearch": "15.1.1",
+    "http-aws-es": "6.0.0"
   },
-  "repository": "https://github.com/pavan3401/aws-elb-logs-to-elasticsearch.git",
+  "repository": "https://github.com/mike-sol/ALB-Logs-to-Elasticsearch",
   "license": "Amazon Software License"
 }
