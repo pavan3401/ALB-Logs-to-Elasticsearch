@@ -31,10 +31,14 @@ var elasticsearch;
 var s3 = new AWS.S3();
 
 // Bulk indexing and stats
-var totalLines = 0;
+var totalIndexedLines = 0;
+var totalStreamedLines = 0;
 var bulkBuffer = [];
 var bulkTransactions = 0;
-var esTimeout = 60000;
+
+// ES configs
+var esTimeout = 100000;
+// var esMaxSockets = 20;
 
 /* Lambda "main": Execution starts here */
 exports.handler = function(event, context) {
@@ -66,7 +70,8 @@ exports.handler = function(event, context) {
         host: esDomain.endpoint,
         connectionClass: require('http-aws-es'),
         log: 'error',
-        requestTimeout: esTimeout
+        requestTimeout: esTimeout,
+        // maxSockets: esMaxSockets
     })
 
     // Prepare bulk buffer
@@ -94,6 +99,8 @@ exports.handler = function(event, context) {
 
         var serializedRecord = JSON.stringify(logRecord);
         this.push(serializedRecord);
+
+        totalStreamedLines++;
         done();
     }
     event.Records.forEach(function(record) {
@@ -139,7 +146,7 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
         })
         .on('finish', function() {
             flushBuffer();
-            console.log("Process complete. "+totalLines+" added in "+bulkTransactions+" transactions.");
+            console.log("Process complete. "+totalIndexedLines+" out of "+totalStreamedLines+" added in "+bulkTransactions+" transactions.");
             context.succeed();
         })
 }
@@ -170,8 +177,8 @@ function flushBuffer() {
     postBulkDocumentsToES(bulkBody);
 
     // Keep stats
-    numLines = bulkBody.length;
-    totalLines += numLines;
+    numLines = bulkBody.length / 2;
+    totalIndexedLines += numLines;
     bulkTransactions++;
 
     // Clear the buffer
