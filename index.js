@@ -30,16 +30,14 @@ var esDomain;
 var elasticsearch;
 var s3 = new AWS.S3();
 
-// Bulk indexing
-var maxBulkIndexLines = 100; // Max Number of log lines to send per bulk interaction with ES
-var totalLines;
-var bulkBuffer;
+// Bulk indexing and stats
+var totalLines = 0;
+var bulkBuffer = [];
+var bulkTransactions = 0;
+var esTimeout = 60000;
 
 /* Lambda "main": Execution starts here */
 exports.handler = function(event, context) {
-
-    // Number of log lines written
-    totalLines = 0;
 
     // Set indexTimestamp and esDomain index fresh on each run
     indexTimestamp = new Date().toISOString().replace(/\-/g, '.').replace(/T.+/, '');
@@ -49,12 +47,14 @@ exports.handler = function(event, context) {
         index: process.env.ES_INDEX_PREFIX + '-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
         doctype: process.env.ES_DOCTYPE,
         environment: process.env.ES_ENVIRONMENT,
-        deployment: process.env.ES_DEPLOYMENT
+        deployment: process.env.ES_DEPLOYMENT,
+        maxBulkIndexLines: process.env.ES_BULKSIZE // Max Number of log lines to send per bulk interaction with ES
     };
 
     /**
-     * Get connected to Elasticsearch using the official elasticsearch.js client
-     * and the http-aws-es Connection Class for signing requests using IAM creds.
+     * Get connected to Elasticsearch using the official 
+     * elasticsearch.js client and the http-aws-es Connection 
+     * Class for signing requests using IAM creds.
      *
      * The AWS credentials are picked up from the environment.
      * They belong to the IAM role assigned to the Lambda function.
@@ -65,7 +65,8 @@ exports.handler = function(event, context) {
     elasticsearch = new ES.Client({
         host: esDomain.endpoint,
         connectionClass: require('http-aws-es'),
-        log: 'error'
+        log: 'error',
+        requestTimeout: esTimeout
     })
 
     // Prepare bulk buffer
@@ -83,6 +84,7 @@ exports.handler = function(event, context) {
     var recordStream = new stream.Transform({
         objectMode: true
     })
+
     recordStream._transform = function(line, encoding, done) {
         var logRecord = parse(line.toString());
 
@@ -104,15 +106,17 @@ exports.handler = function(event, context) {
 /*
  * Get the log file from the given S3 bucket and key.  Parse it and add
  * each log record to the ES domain.
+ *
+ * Note: The Lambda function should be configured to filter for 
+ * .log.gz files (as part of the Event Source "suffix" setting).
  */
 function s3LogsToES(bucket, key, context, lineStream, recordStream) {
-    // Note: The Lambda function should be configured to filter for .log.gz files
-    // (as part of the Event Source "suffix" setting).
 
     var s3Stream = s3.getObject({
         Bucket: bucket,
         Key: key
     }).createReadStream();
+
     var gunzipStream = zlib.createGunzip();
 
     s3Stream
@@ -134,8 +138,8 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
             context.fail();
         })
         .on('finish', function() {
-            console.log("S3 Stream finished, calling for final buffer flush now.")
             flushBuffer();
+            console.log("Process complete. "+totalLines+" added in "+bulkTransactions+" transactions.");
             context.succeed();
         })
 }
@@ -144,10 +148,8 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
 /*
  * Bulk Buffering Functions
  */
-
 function initBulkBuffer() {
     bulkBuffer = [];
-    console.log("Bulk buffer initialized.")
 }
 
 function addToBulkBuffer(doc) {
@@ -155,19 +157,25 @@ function addToBulkBuffer(doc) {
 }
 
 function checkFlushBuffer() {
-    if (bulkBuffer.length >= maxBulkIndexLines) {
-        console.log("Bulk buffer full, calling for buffer flush now.")
+    if (bulkBuffer.length >= esDomain.maxBulkIndexLines) {
         flushBuffer();
     }
 }
 
 function flushBuffer() {
+    // Map the raw lines into an ES bulk transaction body
     bulkBody = convertBufferToBulkBody(bulkBuffer);
+
+    // Submit to ES
     postBulkDocumentsToES(bulkBody);
+
+    // Keep stats
     numLines = bulkBody.length;
     totalLines += numLines;
-    console.log("Bulk buffer flushed, "+numLines+" lines added, "+totalLines+" added total. Now clearing buffer.")
-    bulkBuffer = [];
+    bulkTransactions++;
+
+    // Clear the buffer
+    initBulkBuffer();
 }
 
 function convertBufferToBulkBody(buffer) {
@@ -185,9 +193,13 @@ function convertBufferToBulkBody(buffer) {
 }
 
 function postBulkDocumentsToES(bulkBody) {
-    elasticsearch.bulk({ body: bulkBody })
+    elasticsearch.bulk({ body: bulkBody });
 }
 
+/**
+ * Line Parser.
+ * It would have been much easier with Logstash Grok...
+ */
 function parse(line) {
 
     var url = require('url');
