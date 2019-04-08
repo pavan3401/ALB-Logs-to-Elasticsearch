@@ -37,8 +37,7 @@ Please keep in mind the following notes and configuration overrides:
  ES_ENDPOINT: the FQDN of your AWS Elasticsearch Service
  ES_INDEX_PREFIX: the prefix for your indices, which will be suffixed with the date
  ES_REGION: The AWS region, e.g. us-west-1, of your Elasticsearch instance
- ES_ENVIRONMENT: A value to append as the `environment` field in each record.
- ES_DEPLOYMENT: A value to append as the `deployment` field in each record.
+ ES_EXTRA_FIELDS: A json object with static fields appended to each record. E.g. `{"environment":"foo", "deployment":"bar"}`
  ES_BULKSIZE: The number of log lines to bulk index into ES at once. Try 200.
  ```
 
