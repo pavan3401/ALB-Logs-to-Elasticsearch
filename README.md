@@ -39,7 +39,8 @@ Please keep in mind the following notes and configuration overrides:
  ES_REGION: The AWS region, e.g. us-west-1, of your Elasticsearch instance
  ES_ENVIRONMENT: A value to append as the `environment` field in each record.
  ES_DEPLOYMENT: A value to append as the `deployment` field in each record.
- ES_BULKSIZE: The number of log lines to bulk index into ES at once. Try 200.
+ ES_BULKSIZE: The number of log lines to bulk index into ES at once. Defaults to 200.
+ ES_TIMESTAMP_FIELD_NAME: The field name of event timestamps. Defaults to `timestamp`.
  ```
 
 * The following authorizations are required:
