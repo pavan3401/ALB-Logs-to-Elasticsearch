@@ -50,10 +50,8 @@ exports.handler = function(event, context) {
         endpoint: process.env.ES_ENDPOINT,
         index: process.env.ES_INDEX_PREFIX + '-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
         doctype: process.env.ES_DOCTYPE,
-        environment: process.env.ES_ENVIRONMENT,
-        deployment: process.env.ES_DEPLOYMENT,
-        maxBulkIndexLines: process.env.ES_BULKSIZE || 200, // Max Number of log lines to send per bulk interaction with ES
-        timestampFieldName: process.env.ES_TIMESTAMP_FIELD_NAME || 'timestamp'
+        extraFields: JSON.parse(process.env.ES_EXTRA_FIELDS || '{}'),
+        maxBulkIndexLines: process.env.ES_BULKSIZE // Max Number of log lines to send per bulk interaction with ES
     };
 
     /**
@@ -95,8 +93,7 @@ exports.handler = function(event, context) {
         var logRecord = parse(line.toString());
 
         // Add standard fields to help with searching
-        logRecord['environment'] = esDomain.environment;
-        logRecord['deployment'] = esDomain.deployment;
+        Object.assign(logRecord, esDomain.extraFields);
 
         var serializedRecord = JSON.stringify(logRecord);
         this.push(serializedRecord);
