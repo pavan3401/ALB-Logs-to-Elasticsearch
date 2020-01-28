@@ -213,7 +213,7 @@ function parse(line) {
     // but are also quote-enclosed for strings containing spaces.
     var field_names = [
         'type',
-        'timestamp',
+        esDomain.timestampFieldName,
         'elb',
         'client',
         'target',
