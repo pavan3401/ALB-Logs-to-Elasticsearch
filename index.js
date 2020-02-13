@@ -23,6 +23,15 @@ var stream = require('stream');
 var zlib = require('zlib');
 var ES = require('elasticsearch');
 
+/* Geo IP Parsing */
+var geoip_enabled = (process.env.GEOIP_LOOKUP_ENABLED == "true") ? true : false;
+if (geoip_enabled) {
+    console.log("GeoIP parsing is enabled!")
+    var geoip = require('geoip-lite');
+}
+else {
+    console.log("GeoIP parsing is NOT enabled. Set GEOIP_LOOKUP_ENABLED to true to enable.")
+}
 
 /* Globals */
 var indexTimestamp;
@@ -46,9 +55,12 @@ exports.handler = function(event, context) {
     // Set indexTimestamp and esDomain index fresh on each run
     indexTimestamp = new Date().toISOString().replace(/\-/g, '.').replace(/T.+/, '');
 
+    // Compose index name; add a timestamp to index. Example: alblogs-2015.03.31
+    indexName = process.env.ES_INDEX_PREFIX + '-' + indexTimestamp
+
     esDomain = {
         endpoint: process.env.ES_ENDPOINT,
-        index: process.env.ES_INDEX_PREFIX + '-' + indexTimestamp, // adds a timestamp to index. Example: alblogs-2015.03.31
+        index: indexName,
         doctype: process.env.ES_DOCTYPE,
         extraFields: JSON.parse(process.env.ES_EXTRA_FIELDS || '{}'),
         maxBulkIndexLines: process.env.ES_BULKSIZE // Max Number of log lines to send per bulk interaction with ES
@@ -73,6 +85,10 @@ exports.handler = function(event, context) {
         // maxSockets: esMaxSockets
     })
 
+    // Ensure Elasticsearch index has been configured.
+    // We only need to force a datatype on the log field.
+    prepareESIndex(indexName, elasticsearch);
+
     // Prepare bulk buffer
     initBulkBuffer();
 
@@ -94,6 +110,25 @@ exports.handler = function(event, context) {
 
         // Add standard fields to help with searching
         Object.assign(logRecord, esDomain.extraFields);
+
+        // Handle GeoIP parsing if enabled
+        if (geoip_enabled) {
+            var geo = geoip.lookup(logRecord['client']);
+
+            // Lat/Lon
+            logRecord['location'] = {
+                'lat': geo['ll'][0], 
+                'lon': geo['ll'][1]
+            }
+
+            // GeoIP's own city guesses. Don't keep everything.
+            logRecord['geo'] = {
+                'country': geo['country'], 
+                'region': geo['region'],
+                'city': geo['city'],
+                'timezone': geo['timezone']
+            }
+        }
 
         var serializedRecord = JSON.stringify(logRecord);
         this.push(serializedRecord);
@@ -149,6 +184,23 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
         })
 }
 
+
+/*
+ * ES Index Functions
+ */
+function prepareESIndex(indexName, client) {
+    client.indices.putMapping({
+        index: indexName,
+        type: process.env.ES_DOCTYPE,
+        body: {
+            "properties": {
+                "location": {
+                    "type": "geo_point"
+                }
+            }
+        }
+    })
+}
 
 /*
  * Bulk Buffering Functions
