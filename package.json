@@ -12,8 +12,9 @@
     "path": "0.12.7",
     "stream": "0.0.2",
     "byline": "4.2.1",
-    "elasticsearch": "15.1.1",
-    "http-aws-es": "6.0.0"
+    "elasticsearch": "15.5.0",
+    "http-aws-es": "6.0.0",
+    "geoip-lite": "1.4.0"
   },
   "repository": "https://github.com/mike-sol/ALB-Logs-to-Elasticsearch",
   "license": "Amazon Software License"

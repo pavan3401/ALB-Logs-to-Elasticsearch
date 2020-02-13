@@ -14,7 +14,11 @@ and add them to an Amazon Elasticsearch Service domain.
    ```
 
    Verify that these are installed within the `node_modules` subdirectory.
-3. Create a zip file to package the *index.js* and the `node_modules` directory
+3. Update the MaxMind GeoIP DB if you're going to use it:
+```
+cd node_modules/geoip-list && npm run-script updatedb license_key=$MAXMIND_LICENSE_KEY" 
+```
+4. Create a zip file to package the *index.js* and the `node_modules` directory
 
 The zip file thus created is the Lambda Deployment Package.
 
@@ -40,6 +44,7 @@ Please keep in mind the following notes and configuration overrides:
  ES_TIMESTAMP_FIELD_NAME: The field name of event timestamps. Defaults to `timestamp`.
  ES_EXTRA_FIELDS: A json object with static fields appended to each record. E.g. `{"environment":"foo", "deployment":"bar"}`
  ES_BULKSIZE: The number of log lines to bulk index into ES at once. Try 200.
+ GEOIP_LOOKUP_ENABLED: set to "true" if you want to use GeoIP lookup
  ```
 
 * The following authorizations are required:
