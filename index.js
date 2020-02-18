@@ -188,18 +188,50 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
 /*
  * ES Index Functions
  */
-function prepareESIndex(indexName, client) {
-    client.indices.putMapping({
-        index: indexName,
-        type: process.env.ES_DOCTYPE,
-        body: {
-            "properties": {
-                "location": {
-                    "type": "geo_point"
-                }
+async function prepareESIndex(indexName, client) {
+
+    var location_mapping = {
+        "properties": {
+            "location": {
+                "type": "geo_point"
             }
         }
-    })
+    }
+
+    console.log("Does the index exist?");
+    try {
+        var index_exists = await client.indices.exists({ index: indexName });
+        console.log(index_exists);
+    }
+    catch (e) {
+        console.log("Couldn't even check.")
+        console.log(e)
+        throw e;
+    }
+    
+
+    if (index_exists) {
+        console.log("Index " + indexName + " exists. Putting the GeoIP mapping to be sure it's there.");
+        await client.indices.putMapping({
+            index: indexName,
+            type: process.env.ES_DOCTYPE,
+            body: location_mapping
+        });
+        console.log("Ready to log!")
+    }
+    else {
+        console.log("Index " + indexName + " does NOT exist. Creating it.")
+        await client.indices.create({
+            index: indexName
+        });
+        console.log("Also putting mapping for location field");
+        await client.indices.putMapping({
+            index: indexName,
+            type: process.env.ES_DOCTYPE,
+            body: location_mapping
+        });
+        console.log("Ready to log!")
+    }
 }
 
 /*
