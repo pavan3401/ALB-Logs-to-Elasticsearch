@@ -16,37 +16,36 @@
  */
 
 /* Imports */
-var AWS = require('aws-sdk');
-var LineStream = require('byline').LineStream;
-var path = require('path');
-var stream = require('stream');
-var zlib = require('zlib');
-var ES = require('elasticsearch');
+const AWS = require('aws-sdk');
+const LineStream = require('byline').LineStream;
+const stream = require('stream');
+const zlib = require('zlib');
+const ES = require('elasticsearch');
+const geoip = require('geoip-lite');
 
 /* Geo IP Parsing */
-var geoip_enabled = (process.env.GEOIP_LOOKUP_ENABLED == "true") ? true : false;
+const geoip_enabled = process.env.GEOIP_LOOKUP_ENABLED === "true";
 if (geoip_enabled) {
     console.log("GeoIP parsing is enabled!")
-    var geoip = require('geoip-lite');
 }
 else {
     console.log("GeoIP parsing is NOT enabled. Set GEOIP_LOOKUP_ENABLED to true to enable.")
 }
 
 /* Globals */
-var indexTimestamp;
-var esDomain;
-var elasticsearch;
-var s3 = new AWS.S3();
+let indexTimestamp;
+let esDomain;
+let elasticsearch;
+let s3 = new AWS.S3();
 
 // Bulk indexing and stats
-var totalIndexedLines = 0;
-var totalStreamedLines = 0;
-var bulkBuffer = [];
-var bulkTransactions = 0;
+let totalIndexedLines = 0;
+let totalStreamedLines = 0;
+let bulkBuffer = [];
+let bulkTransactions = 0;
 
 // ES configs
-var esTimeout = 100000;
+const esTimeout = 100000;
 // var esMaxSockets = 20;
 
 /* Lambda "main": Execution starts here */
@@ -56,7 +55,7 @@ exports.handler = function(event, context) {
     indexTimestamp = new Date().toISOString().replace(/\-/g, '.').replace(/T.+/, '');
 
     // Compose index name; add a timestamp to index. Example: alblogs-2015.03.31
-    indexName = process.env.ES_INDEX_PREFIX + '-' + indexTimestamp
+    const indexName = process.env.ES_INDEX_PREFIX + '-' + indexTimestamp;
 
     esDomain = {
         endpoint: process.env.ES_ENDPOINT,
@@ -67,8 +66,8 @@ exports.handler = function(event, context) {
     };
 
     /**
-     * Get connected to Elasticsearch using the official 
-     * elasticsearch.js client and the http-aws-es Connection 
+     * Get connected to Elasticsearch using the official
+     * elasticsearch.js client and the http-aws-es Connection
      * Class for signing requests using IAM creds.
      *
      * The AWS credentials are picked up from the environment.
@@ -83,65 +82,77 @@ exports.handler = function(event, context) {
         log: 'error',
         requestTimeout: esTimeout,
         // maxSockets: esMaxSockets
-    })
+    });
 
     // Ensure Elasticsearch index has been configured.
     // We only need to force a datatype on the log field.
-    prepareESIndex(indexName, elasticsearch);
+    prepareESIndexAsync(indexName, elasticsearch).then(() => {
 
-    // Prepare bulk buffer
-    initBulkBuffer();
+        // Prepare bulk buffer
+        initBulkBuffer();
 
-    /* == Streams ==
-     * To avoid loading an entire (typically large) log file into memory,
-     * this is implemented as a pipeline of filters, streaming log data
-     * from S3 to ES.
-     * Flow: S3 file stream -> Log Line stream -> Log Record stream -> Lambda buffer -> ES Bulk API
-     */
-    var lineStream = new LineStream();
+        /* == Streams ==
+         * To avoid loading an entire (typically large) log file into memory,
+         * this is implemented as a pipeline of filters, streaming log data
+         * from S3 to ES.
+         * Flow: S3 file stream -> Log Line stream -> Log Record stream -> Lambda buffer -> ES Bulk API
+         */
 
-    // A stream of log records, from parsing each log line
-    var recordStream = new stream.Transform({
-        objectMode: true
-    })
+        let recordStream = new stream.Transform({
+            objectMode: true
+        });
 
-    recordStream._transform = function(line, encoding, done) {
-        var logRecord = parse(line.toString());
+        recordStream._transform = function(line, encoding, done) {
 
-        // Add standard fields to help with searching
-        Object.assign(logRecord, esDomain.extraFields);
+            // Add standard fields to help with searching
+            let logRecord = {
+                ...parse(line.toString()),
+                ...esDomain.extraFields
+            };
 
-        // Handle GeoIP parsing if enabled
-        if (geoip_enabled) {
-            var geo = geoip.lookup(logRecord['client']);
+            // Handle GeoIP parsing if enabled
+            if (geoip_enabled) {
 
-            // Lat/Lon
-            logRecord['location'] = {
-                'lat': geo['ll'][0], 
-                'lon': geo['ll'][1]
+                const geo = geoip.lookup(logRecord['client']);
+
+                // Lat/Lon
+                logRecord['location'] = {
+                    'lat': geo['ll'][0],
+                    'lon': geo['ll'][1]
+                };
+
+                // GeoIP's own city guesses. Don't keep everything.
+                logRecord['geo'] = {
+                    'country': geo['country'],
+                    'region': geo['region'],
+                    'city': geo['city'],
+                    'timezone': geo['timezone']
+                }
             }
 
-            // GeoIP's own city guesses. Don't keep everything.
-            logRecord['geo'] = {
-                'country': geo['country'], 
-                'region': geo['region'],
-                'city': geo['city'],
-                'timezone': geo['timezone']
-            }
-        }
+            this.push(JSON.stringify(logRecord)); // what's "this" here?
+            totalStreamedLines++;
+            done();
 
-        var serializedRecord = JSON.stringify(logRecord);
-        this.push(serializedRecord);
+        };
 
-        totalStreamedLines++;
-        done();
-    }
-    event.Records.forEach(function(record) {
-        var bucket = record.s3.bucket.name;
-        var objKey = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
-        s3LogsToES(bucket, objKey, context, lineStream, recordStream);
+        return recordStream;
+
+    }).then(recordStream => {
+
+        let lineStream = new LineStream();
+        event.Records.forEach(record => {
+            const bucket = record.s3.bucket.name;
+            const objKey = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
+            s3LogsToES(bucket, objKey, context, lineStream, recordStream);
+        });
+
+    }).catch(e => {
+        console.log("Unexpected error:");
+        console.log(e)
     });
-}
+
+};
 
 /*
  * Get the log file from the given S3 bucket and key.  Parse it and add
@@ -185,6 +196,49 @@ function s3LogsToES(bucket, key, context, lineStream, recordStream) {
 }
 
 
+function prepareESIndexAsync(index, client) {
+
+  return new Promise((resolve, reject) => {
+
+    return client.indices.exists({index}).then(exists => {
+
+      if(!exists) {
+        console.log(`Index ${index} doesn't exist, creating...`);
+        return client.indices.create({index});
+      } else {
+        console.log(`Index ${index} exists.`);
+        return exists;
+      }
+
+    }).then(() => {
+
+      console.log(`Putting the GeoIP mapping into index ${index}`);
+      return client.indices.putMapping({
+        index,
+        type: process.env.ES_DOCTYPE,
+        body: {
+          properties: {
+            location: {
+              type: "geo_point"
+            }
+          }
+        }
+      });
+
+    }).then(() => {
+
+      resolve() // work is done
+
+    }).catch(e => {
+      console.log("Failure preparing ES Index:");
+      console.log(e);
+      reject(e);
+    })
+
+  });
+
+}
+
 /*
  * ES Index Functions
  */
@@ -208,7 +262,7 @@ async function prepareESIndex(indexName, client) {
         console.log(e)
         throw e;
     }
-    
+
 
     if (index_exists) {
         console.log("Index " + indexName + " exists. Putting the GeoIP mapping to be sure it's there.");
@@ -282,7 +336,7 @@ function convertBufferToBulkBody(buffer) {
 }
 
 function postBulkDocumentsToES(bulkBody) {
-    elasticsearch.bulk({ body: bulkBody });
+    elasticsearch.bulk({ body: bulkBody, timeout: "200s" }, {requestTimeout: 200000, maxRetries: 5});
 }
 
 /**
@@ -344,7 +398,7 @@ function parse(line) {
                 // Beginning a quoted field.
                 within_quotes = true;
             } else if (c == " ") {
-                // Separator. Moving on to the next field. 
+                // Separator. Moving on to the next field.
 
                 // Convert to numeric type if appropriate.
                 // This is needed to make sure Elasticsearch gets the
